@@ -106,6 +106,8 @@ class PatientConsultationSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    medico_legal_case = serializers.BooleanField(default=False, required=False)
+
     def get_discharge_prescription(self, consultation):
         return Prescription.objects.filter(
             consultation=consultation,
@@ -136,6 +138,7 @@ class PatientConsultationSerializer(serializers.ModelSerializer):
             "last_edited_by",
             "created_by",
             "kasp_enabled_date",
+            "is_readmission",
             "deprecated_verified_by",
         )
         exclude = ("deleted", "external_id")
@@ -152,9 +155,14 @@ class PatientConsultationSerializer(serializers.ModelSerializer):
         instance.last_edited_by = self.context["request"].user
 
         if instance.discharge_date:
-            raise ValidationError(
-                {"consultation": ["Discharged Consultation data cannot be updated"]}
-            )
+            if "medico_legal_case" not in validated_data:
+                raise ValidationError(
+                    {"consultation": ["Discharged Consultation data cannot be updated"]}
+                )
+            else:
+                instance.medico_legal_case = validated_data.pop("medico_legal_case")
+                instance.save()
+                return instance
 
         if instance.suggestion == SuggestionChoices.OP:
             instance.discharge_date = localtime(now())
@@ -262,6 +270,17 @@ class PatientConsultationSerializer(serializers.ModelSerializer):
         consultation = super().create(validated_data)
         consultation.created_by = self.context["request"].user
         consultation.last_edited_by = self.context["request"].user
+        patient = consultation.patient
+        last_consultation = patient.last_consultation
+        if (
+            last_consultation
+            and consultation.suggestion == SuggestionChoices.A
+            and last_consultation.suggestion == SuggestionChoices.A
+            and last_consultation.discharge_date
+            and last_consultation.discharge_date + timedelta(days=30)
+            > consultation.admission_date
+        ):
+            consultation.is_readmission = True
         consultation.save()
 
         if bed and consultation.suggestion == SuggestionChoices.A:
@@ -274,7 +293,6 @@ class PatientConsultationSerializer(serializers.ModelSerializer):
             consultation.current_bed = consultation_bed
             consultation.save(update_fields=["current_bed"])
 
-        patient = consultation.patient
         if consultation.suggestion == SuggestionChoices.OP:
             consultation.discharge_date = localtime(now())
             consultation.save()
